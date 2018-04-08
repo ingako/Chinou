@@ -59,6 +59,8 @@ let Main2 (hoconName: string) (job: string) (x: string) =
     printfn "... learnRate = %f" learnRate
     let momentum = config.GetDouble ("root.momentum");
     printfn "... momentum = %f" momentum
+    let N = config.GetInt("root.N");
+    printfn "... dataShards = %d" N
     
     if job = "/TRAIN" then
         printfn "\n--- Training a model ---"
@@ -76,6 +78,33 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         printfn "\nThe test data is:\n"     
         NNHelper.ShowMatrix (testData, numRows=3, decimals=1, indices=true);
 
+
+        // TODO
+        printfn "\Partitioning data into %d shards" N
+        let shuffle (s: 'a[]) (rnd: Random) = // Fisher
+            for i = 0 to s.Length-1 do
+                let r = rnd.Next (i, s.Length);
+                let tmp = s.[r];
+                s.[r] <- s.[i];
+                s.[i] <- tmp;
+
+        let partition (data: double[][]) (len: int) (partitionseed: int) =
+            let rnd = new Random (nnSeed) 
+            shuffle data rnd
+    
+            [| 
+                let n = data.Length / len
+                for i = 0 to n-1 do
+                    let start = i * len
+                    yield data.[start .. start+len-1]
+                let start = n * len
+                if start < data.Length then
+                    yield data.[start .. ]
+            |] 
+
+        let trainDataShards = partition trainData (trainData.Length/N) nnSeed
+
+
         printfn "\nCreating a %d-%d-%d neural network" numInput numHidden numOutput
         let nntrain = NeuralNetwork (numInput, numHidden, numOutput, nnSeed)
 
@@ -84,7 +113,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         else nntrain.RandomiseWeights ()
         
         printfn "\nThe initial weights and biases are:"
-        let weights = nntrain.GetWeights ()
+        let weights = nntrain.GetInitWeights ()
         NNHelper.ShowVector (weights, decimals=4, lineLen=10);
 
         let allAcc = nntrain.Accuracy (allData)
@@ -102,7 +131,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         use errtw = File.CreateText (errName);
 
         printfn "\nStarting training\n"
-        let weights = nntrain.Train (trainData, maxEpochs, learnRate, momentum, errtw)
+        let weights = nntrain.Train (trainDataShards, maxEpochs, learnRate, momentum, N, errtw)
         printfn "\nTraining complete"
 
         printfn "\nThe trained weights and biases are:"
@@ -130,7 +159,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
     let nnload = NeuralNetwork.LoadModel (modelName, nnSeed)
 
     printfn "\nThe loaded weights and biases are:"
-    let weights = nnload.GetWeights ()
+    let weights = nnload.GetInitWeights () // TODO
     NNHelper.ShowVector (weights, decimals=4, lineLen=10);
 
     let testAcc = nnload.Accuracy (testData2)

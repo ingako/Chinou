@@ -6,10 +6,10 @@ type NNHelper =
     static member ShowVector (vector: double[], decimals: int, lineLen: int) =
         let formatv = Printf.TextWriterFormat<float->unit>(sprintf "%%%d.%df " (decimals+3) decimals)
         
-        vector 
-            |> Array.iteri (fun i v ->
-                if i > 0 && i % lineLen = 0 then printfn "";
-                printf formatv v)
+        vector |> Array.iteri (fun i v ->
+            if i > 0 && i % lineLen = 0 then printfn "";
+            printf formatv v
+            )
             
         //for i in 0 .. vector.Length-1 do
             //if i > 0 && i % lineLen = 0 then printfn "";
@@ -42,15 +42,15 @@ type NNHelper =
         let lines = File.ReadAllLines (dataFile);
         let result =
             lines
-                |> Array.map (fun line -> 
-                    let c = line.IndexOf ("//")
-                    if c >= 0 then line.Substring (0, c)
-                    else line)
-                |> Array.filter (fun line -> line.Trim() <> "")
-                |> Array.map (fun line -> 
-                    line.Split(' ') 
-                    |> Array.collect (fun tok -> 
-                        if tok.Trim() <> "" then [| Double.Parse (tok) |] else [| |]))
+            |> Array.map (fun line -> 
+                let c = line.IndexOf ("//")
+                if c >= 0 then line.Substring (0, c)
+                else line)
+            |> Array.filter (fun line -> line.Trim() <> "")
+            |> Array.map (fun line -> 
+                line.Split(' ') 
+                |> Array.collect (fun tok -> 
+                    if tok.Trim() <> "" then [| Double.Parse (tok) |] else [| |]))
         result
             
     static member SplitData (allData: double[][], trainPct: double, splitSeed: int): (double[][] * double[][]) = // trainData, testData
