@@ -144,9 +144,9 @@ let Main (args: string[]) =
     try 
         // args.[0] HOCON config 
         // args.[1] a tag (/TRAIN or /TEST)
-        Main2 args.[0] args.[1] (if args.Length > 2 then args.[2] else "") 
-        Console.Error.WriteLine ("\nEnd neural network model demo\n")
-        Console.ReadLine();
+        // args.[2] use xavier initialization or not (/X+ or /X-)
+        Main2 args.[0] args.[1] (if args.Length > 2 then args.[2] else "")
+        Console.ReadLine() |> ignore;
         0;
 
     with ex ->

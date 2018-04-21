@@ -1,6 +1,6 @@
 namespace NNClass
 open System;
-open System.IO;
+open System.IO
 
 type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
     let numWeights = 
@@ -62,9 +62,34 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         
     member this.XavierWeights () = 
         // initialize weights and biases approx. Xavier
-        // ***
-        // this.SetWeights (...);
-        ()
+        let var fanIn fanOut = 2.0 / float (fanIn + fanOut)
+        let gaussian mean stddev = 
+            let u1 = 1.0 - rnd.NextDouble();
+            let u2 = 1.0 - rnd.NextDouble();
+            let randStdNormal = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+            let randNormal = mean + stddev * randStdNormal;
+            randNormal
+
+        let mutable k = 0; // points into weights param
+
+        for i = 0 to numInput-1 do
+            for j = 0 to numHidden-1 do
+                let stddev = Math.Sqrt(var numInput numHidden);
+                ihWeights.[i].[j] <- gaussian 0.0 stddev;
+                k <- k + 1
+        for i = 0 to numHidden-1 do
+            let stddev = Math.Sqrt(var numInput numOutput);
+            hBiases.[i] <- gaussian 0.0 stddev;
+            k <- k + 1
+        for i = 0 to numHidden-1 do
+            for j = 0 to numOutput-1 do
+                let stddev = Math.Sqrt(var numHidden numOutput);
+                hoWeights.[i].[j] <- gaussian 0.0 stddev;
+                k <- k + 1
+        for i = 0 to numOutput-1 do
+            let stddev = Math.Sqrt(var numHidden 1);
+            oBiases.[i] <- gaussian 0.0 stddev;
+            k <- k + 1
         
     member this.RandomiseWeights () = 
         // initialize weights and biases to small random values
@@ -108,13 +133,28 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         this.FPrintModel (tw)
         
     member this.FPrintModel (tw: TextWriter) =
-        // TODO
-        // ***
-        // ***
+        fprintfn tw "// numInput numHidden numOutput"
         fprintf tw "%d %d %d\n" numInput numHidden numOutput
-        Array.create numWeights 0.0 |> Array.iter (fun v -> fprintf tw "%f " v)
+
+        fprintfn tw "\n// i-h weights (%i*%i):" numInput numHidden
+        for i = 0 to numInput-1 do
+            ihWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
+            fprintf tw "\n"
+
+        fprintfn tw "\n// h biases (%i):" numHidden
+        hBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
+        fprintf tw "\n"
+        
+        fprintfn tw "\n// h-o weights (%i*%i):" numHidden numOutput
+        for i = 0 to numHidden-1 do
+            hoWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
+            fprintf tw "\n"
+        
+        fprintfn tw "\n// o biases (%i):" numOutput
+        oBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
+        fprintf tw "\n"
+
         fprintfn tw "\n//"
-        ()
 
     member this.HyperTanFunction (x: double): double =
         if x < -20.0 then -1.0; // approximation is correct to 30 decimals
@@ -223,86 +263,95 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         let oPrevBiasesDelta = Array.create numOutput 0.0;
 
         // train a back-prop style NN classifier using learning rate and momentum
-        let mutable epoch = 0;
         let errInterval = maxEpochs / 10; // interval to check validation data
         let sequence = [|0 .. trainData.Length - 1|]
+        let mutable minTrainErr = 1.0
+        let mutable preTrainErr = 1.0
 
-        while epoch <= maxEpochs do
-            this.FPrintModel errtw
+        for epoch = 0 to maxEpochs do
+            // log trainning error
+            let trainErr = this.Error trainData;
+            let c = 
+                if minTrainErr > trainErr then "*"
+                else if preTrainErr > trainErr then "-"
+                else ""
+            fprintf errtw "%4i %.4f %s\n" epoch trainErr c
+            minTrainErr <- min trainErr minTrainErr
+            preTrainErr <- trainErr
+
             if (epoch % errInterval) = 0 && epoch <= maxEpochs then
-                let trainErr = this.Error trainData;
                 printfn "epoch = %4i  training error = %.4f" epoch trainErr;
 
-            this.Shuffle(sequence) // visit each training data in random order
+            if epoch <> maxEpochs then
 
-            for ii = 0 to trainData.Length - 1 do
-                let idx = sequence.[ii]
-                let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
-                let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
-                this.ComputeOutputs xValues; // copy xValues in, compute outputs
+                this.Shuffle(sequence) // visit each training data in random order
+
+                for ii = 0 to trainData.Length - 1 do
+                    let idx = sequence.[ii]
+                    let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
+                    let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
+                    this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
                 
-                // 1. compute output nodes signals (assumes softmax)
-                // output signals - gradients w/o associated input terms
-                let oSignals = 
-                    Array.init numOutput (fun k -> 
-                        (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
+                    // 1. compute output nodes signals (assumes softmax)
+                    // output signals - gradients w/o associated input terms
+                    let oSignals = 
+                        Array.init numOutput (fun k -> 
+                            (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
                 
-                // 2. compute hidden-to-output weights gradients using output signals
-                let hoGrads = 
-                    Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
+                    // 2. compute hidden-to-output weights gradients using output signals
+                    let hoGrads = 
+                        Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
 
-                // 2b. compute output biases gradients using output signals
-                // TODO unnecessary convertion
-                let obGrads = 
-                    Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
+                    // 2b. compute output biases gradients using output signals
+                    // TODO unnecessary convertion
+                    let obGrads = 
+                        Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
 
-                // 3. compute hidden nodes signals
-                let hSignals = 
-                    Array.init numHidden (fun j -> 
-                        let sum = 
-                            Array.zip oSignals hoWeights.[j]
-                            |> Array.sumBy(fun (a, b) -> a * b);
-                        (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
+                    // 3. compute hidden nodes signals
+                    let hSignals = 
+                        Array.init numHidden (fun j -> 
+                            let sum = 
+                                Array.zip oSignals hoWeights.[j]
+                                |> Array.sumBy(fun (a, b) -> a * b);
+                            (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
 
-                // 4. compute input0hidden weights gradients
-                let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
+                    // 4. compute input0hidden weights gradients
+                    let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
 
-                // 4b. compute hidden node biases gradients
-                let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
+                    // 4b. compute hidden node biases gradients
+                    let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
 
-                // === update weights and biases ===
+                    // === update weights and biases ===
 
-                // update input-to-hidden weights
-                for i = 0 to numInput - 1 do
+                    // update input-to-hidden weights
+                    for i = 0 to numInput - 1 do
+                        for j = 0 to numHidden - 1 do
+                            let delta = ihGrads.[i,j] * learnRate;
+                            ihWeights.[i].[j] <- ihWeights.[i].[j] + delta;
+                            ihWeights.[i].[j] <- ihWeights.[i].[j] + ihPrevWeightsDelta.[i,j] * momentum;
+                            ihPrevWeightsDelta.[i,j] <- delta // save for next time
+                
+                    // update hidden biases
                     for j = 0 to numHidden - 1 do
-                        let delta = ihGrads.[i,j] * learnRate;
-                        ihWeights.[i].[j] <- ihWeights.[i].[j] + delta;
-                        ihWeights.[i].[j] <- ihWeights.[i].[j] + ihPrevWeightsDelta.[i,j] * momentum;
-                        ihPrevWeightsDelta.[i,j] <- delta // save for next time
-                
-                // update hidden biases
-                for j = 0 to numHidden - 1 do
-                    let delta = hbGrads.[j] * learnRate;
-                    hBiases.[j] <- hBiases.[j] + delta;
-                    hBiases.[j] <- hBiases.[j] + hPrevBiasesDelta.[j] * momentum;
-                    hPrevBiasesDelta.[j] <- delta;
+                        let delta = hbGrads.[j] * learnRate;
+                        hBiases.[j] <- hBiases.[j] + delta;
+                        hBiases.[j] <- hBiases.[j] + hPrevBiasesDelta.[j] * momentum;
+                        hPrevBiasesDelta.[j] <- delta;
 
-                // update hiiden-to-output weights
-                for j = 0 to numHidden - 1 do
+                    // update hiiden-to-output weights
+                    for j = 0 to numHidden - 1 do
+                        for k = 0 to numOutput - 1 do
+                            let delta = hoGrads.[j,k] * learnRate;
+                            hoWeights.[j].[k] <- hoWeights.[j].[k] + delta;
+                            hoWeights.[j].[k] <- hoWeights.[j].[k] + hoPrevWeightsDelta.[j,k] * momentum;
+                            hoPrevWeightsDelta.[j,k] <- delta;
+
+                    // update output node biases
                     for k = 0 to numOutput - 1 do
-                        let delta = hoGrads.[j,k] * learnRate;
-                        hoWeights.[j].[k] <- hoWeights.[j].[k] + delta;
-                        hoWeights.[j].[k] <- hoWeights.[j].[k] + hoPrevWeightsDelta.[j,k] * momentum;
-                        hoPrevWeightsDelta.[j,k] <- delta;
-
-                // update output node biases
-                for k = 0 to numOutput - 1 do
-                    let delta = obGrads.[k] * learnRate;
-                    oBiases.[k] <- oBiases.[k] + delta;
-                    oBiases.[k] <- oBiases.[k] + oPrevBiasesDelta.[k] * momentum;
-                    oPrevBiasesDelta.[k] <- delta;
-                
-            epoch <- epoch + 1;
+                        let delta = obGrads.[k] * learnRate;
+                        oBiases.[k] <- oBiases.[k] + delta;
+                        oBiases.[k] <- oBiases.[k] + oPrevBiasesDelta.[k] * momentum;
+                        oPrevBiasesDelta.[k] <- delta;
 
         let bestWeights = this.GetWeights ();
         bestWeights;
@@ -312,4 +361,3 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         [| 0.0 |]
 
 // F# |> I LOVE
-// (*'-'*)
