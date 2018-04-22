@@ -1,21 +1,38 @@
 namespace NNClass
 open System;
-open System.IO
+open System.IO;
+open Akka.Configuration;
+open System.Threading;
+open System.Threading.Tasks;
+
+type Param_Msg =
+    | Get of int * int * int * AsyncReplyChannel<double[][] * double[] * double[][] * double[]>
+    | Update of int * int * int * double[,] * double[] * double[,] * double[]
+    | SaveModel of string * AsyncReplyChannel<unit>
 
 type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
     let numWeights = 
         (numInput * numHidden) + (numHidden * numOutput) + numHidden + numOutput;
 
+    let rnd = new Random (seed); // used by randomize and by train/shuffle
+    
     let inputs = Array.create numInput 0.0;
-    let ihWeights = Array.init numInput (fun r -> Array.create numHidden 0.0) // input-hidden
-    let hBiases = Array.create numHidden 0.0;
     let hOutputs = Array.create numHidden 0.0;
-
-    let hoWeights = Array.init numHidden (fun r -> Array.create numOutput 0.0) // hidden-output
-    let oBiases = Array.create numOutput 0.0;
     let outputs = Array.create numOutput 0.0;
 
-    let rnd = new Random (seed); // used by randomize and by train/shuffle
+    let mutable ihWeights: double[][] = Array.init numInput (fun r -> Array.create numHidden 0.0); // input-hidden
+    let mutable hBiases: double[] = Array.create numHidden 0.0;
+    let mutable hoWeights: double[][] = Array.init numHidden (fun r -> Array.create numOutput 0.0) // hidden-output
+    let mutable oBiases: double[] = Array.create numOutput 0.0;
+
+    // back-prop momentum specific arrays
+    let ihPrevWeightsDelta = Array2D.init numInput numHidden (fun i j -> 0.0);
+    let hPrevBiasesDelta = Array.create numHidden 0.0;
+    let hoPrevWeightsDelta = Array2D.init numHidden numOutput (fun i j -> 0.0);
+    let oPrevBiasesDelta = Array.create numOutput 0.0; 
+
+    let mutable minTrainErr = 1.0
+    let mutable preTrainErr = 1.0
 
     member this.GetWeights (): double[] =
         let result = Array.create numWeights 0.0;
@@ -245,112 +262,140 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                 numWrong <- numWrong + 1.0;
         numCorrect / (numCorrect + numWrong);
 
-    member this.Train 
-        (trainData: double[][], maxEpochs: int, learnRate: double, momentum: double, errtw: TextWriter): double[] =
+    member this.Train (paramstoreStore: MailboxProcessor<Param_Msg>, 
+                       datashardIdx: int, 
+                       trainData: double[][], 
+                       maxEpochs: int, 
+                       learnRate: double, 
+                       momentum: double, 
+                       errtw: TextWriter,
+                       acount: int ref,
+                       adone: TaskCompletionSource<bool>) =
       try
         // train using back-prop
-      
-        // back-prop momentum specific arrays
-        let ihPrevWeightsDelta = Array2D.init numInput numHidden (fun i j -> 0.0);
-        let hPrevBiasesDelta = Array.create numHidden 0.0;
-        let hoPrevWeightsDelta = Array2D.init numHidden numOutput (fun i j -> 0.0);
-        let oPrevBiasesDelta = Array.create numOutput 0.0;
         
         // train a back-prop style NN classifier using learning rate and momentum
         let errInterval = maxEpochs / 10; // interval to check validation data
         let sequence = [|0 .. trainData.Length - 1|]
-        let mutable minTrainErr = 1.0
-        let mutable preTrainErr = 1.0
 
-        for epoch = 0 to maxEpochs do
-            // log trainning error
-            let trainErr = this.Error trainData;
-            let c = 
-                if minTrainErr > trainErr then "*"
-                else if preTrainErr > trainErr then "-"
-                else ""
-            fprintf errtw "%4i %.4f %s\n" epoch trainErr c
-            minTrainErr <- min trainErr minTrainErr
-            preTrainErr <- trainErr
+        let datashardActor = MailboxProcessor<bool>.Start(fun inbox ->
+            let rec loop epoch = async {
+                // log trainning error
+                let trainErr = this.Error trainData;
+                let c = 
+                    if minTrainErr > trainErr then "*"
+                    else if preTrainErr > trainErr then "-"
+                    else ""
+                // TODO
+                // fprintf errtw "%4i %.4f %s\n" epoch trainErr c
+                minTrainErr <- min trainErr minTrainErr
+                preTrainErr <- trainErr
 
-            if (epoch % errInterval) = 0 && epoch <= maxEpochs then
-                printfn "epoch = %4i  training error = %.4f" epoch trainErr;
+                if (epoch % errInterval) = 0 && epoch <= maxEpochs then
+                    printfn "index = %i  epoch = %4i  training error = %.4f" datashardIdx epoch trainErr;
 
-            if epoch <> maxEpochs then
+                if epoch >= maxEpochs then
+                    if Interlocked.Decrement acount = 0 then 
+                        //Console.WriteLine (sprintf "... [%d] done all" (tid()))
+                        adone.SetResult true
+                    return ()
+            
+                else
+                    this.Shuffle(sequence) // visit each training data in random order
 
-                this.Shuffle(sequence) // visit each training data in random order
+                    for ii = 0 to trainData.Length - 1 do
 
-                for ii = 0 to trainData.Length - 1 do
-                    let idx = sequence.[ii]
-                    let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
-                    let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
-                    this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
+                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, ii, ch))
+                        ihWeights <- Array.copy _ihWeights
+                        hBiases <- Array.copy _hBiases
+                        hoWeights <- Array.copy _hoWeights
+                        oBiases <- Array.copy _oBiases 
+
+                        let idx = sequence.[ii]
+                        let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
+                        let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
+                        this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
+
+                        // 1. compute output nodes signals (assumes softmax)
+                        // output signals - gradients w/o associated input terms
+                        let oSignals = 
+                            Array.init numOutput (fun k -> 
+                                (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
                 
-                    // 1. compute output nodes signals (assumes softmax)
-                    // output signals - gradients w/o associated input terms
-                    let oSignals = 
-                        Array.init numOutput (fun k -> 
-                            (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
-                
-                    // 2. compute hidden-to-output weights gradients using output signals
-                    let hoGrads = 
-                        Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
+                        // 2. compute hidden-to-output weights gradients using output signals
+                        let hoGrads = 
+                            Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
 
-                    // 2b. compute output biases gradients using output signals
-                    // TODO unnecessary convertion
-                    let obGrads = 
-                        Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
+                        // 2b. compute output biases gradients using output signals
+                        // TODO unnecessary convertion
+                        let obGrads = 
+                            Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
 
-                    // 3. compute hidden nodes signals
-                    let hSignals = 
-                        Array.init numHidden (fun j -> 
-                            let sum = 
-                                Array.zip oSignals hoWeights.[j]
-                                |> Array.sumBy(fun (a, b) -> a * b);
-                            (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
+                        // 3. compute hidden nodes signals
+                        let hSignals: double[] = 
+                            Array.init numHidden (fun j -> 
+                                let sum = 
+                                    Array.zip oSignals hoWeights.[j]
+                                    |> Array.sumBy(fun (a, b) -> a * b);
+                                (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
 
-                    // 4. compute input0hidden weights gradients
-                    let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
+                        // 4. compute input0hidden weights gradients
+                        let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
 
-                    // 4b. compute hidden node biases gradients
-                    let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
+                        // 4b. compute hidden node biases gradients
+                        let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
 
-                    // === update weights and biases ===
-                    // update input-to-hidden weights
-                    for i = 0 to numInput - 1 do
-                        for j = 0 to numHidden - 1 do
-                            let delta = ihGrads.[i,j] * learnRate;
-                            ihWeights.[i].[j] <- ihWeights.[i].[j] + delta;
-                            ihWeights.[i].[j] <- ihWeights.[i].[j] + ihPrevWeightsDelta.[i,j] * momentum;
-                            ihPrevWeightsDelta.[i,j] <- delta // save for next time
-                
-                    // update hidden biases
-                    for j = 0 to numHidden - 1 do
-                        let delta = hbGrads.[j] * learnRate;
-                        hBiases.[j] <- hBiases.[j] + delta;
-                        hBiases.[j] <- hBiases.[j] + hPrevBiasesDelta.[j] * momentum;
-                        hPrevBiasesDelta.[j] <- delta;
+                        paramstoreStore.Post (Update (datashardIdx, epoch, ii, ihGrads, hbGrads, hoGrads, obGrads))
 
-                    // update hiiden-to-output weights
-                    for j = 0 to numHidden - 1 do
-                        for k = 0 to numOutput - 1 do
-                            let delta = hoGrads.[j,k] * learnRate;
-                            hoWeights.[j].[k] <- hoWeights.[j].[k] + delta;
-                            hoWeights.[j].[k] <- hoWeights.[j].[k] + hoPrevWeightsDelta.[j,k] * momentum;
-                            hoPrevWeightsDelta.[j,k] <- delta;
-
-                    // update output node biases
-                    for k = 0 to numOutput - 1 do
-                        let delta = obGrads.[k] * learnRate;
-                        oBiases.[k] <- oBiases.[k] + delta;
-                        oBiases.[k] <- oBiases.[k] + oPrevBiasesDelta.[k] * momentum;
-                        oPrevBiasesDelta.[k] <- delta;
-        
-        let bestWeights = this.GetWeights ();
-        bestWeights;
-        
+                        return! loop (epoch + 1)
+                }
+            loop 0)
+        ()
       with ex -> 
-        Console.WriteLine ("Error during training: {0}", ex.Message);
-        [| 0.0 |]
+        Console.WriteLine ("*** {0}", ex.Message);
+        ()
+
+    member this.GetCurrentWeights () = 
+        (ihWeights, hBiases, hoWeights, oBiases)
+
+    member this.UpdateWeights (ihGrads: double[,])
+                              (hbGrads: double[])
+                              (hoGrads: double[,])
+                              (obGrads: double[])
+                              (learnRate: double) 
+                              (momentum: double) = 
+        try
+            // update input-to-hidden weights
+            for i = 0 to numInput - 1 do
+                for j = 0 to numHidden - 1 do
+                    let delta = ihGrads.[i,j] * learnRate;
+                    ihWeights.[i].[j] <- ihWeights.[i].[j] + delta;
+                    ihWeights.[i].[j] <- ihWeights.[i].[j] + ihPrevWeightsDelta.[i,j] * momentum;
+                    ihPrevWeightsDelta.[i,j] <- delta // save for next time
+                
+            // update hidden biases
+            for j = 0 to numHidden - 1 do
+                let delta = hbGrads.[j] * learnRate;
+                hBiases.[j] <- hBiases.[j] + delta;
+                hBiases.[j] <- hBiases.[j] + hPrevBiasesDelta.[j] * momentum;
+                hPrevBiasesDelta.[j] <- delta;
+
+            // update hiiden-to-output weights
+            for j = 0 to numHidden - 1 do
+                for k = 0 to numOutput - 1 do
+                    let delta = hoGrads.[j,k] * learnRate;
+                    hoWeights.[j].[k] <- hoWeights.[j].[k] + delta;
+                    hoWeights.[j].[k] <- hoWeights.[j].[k] + hoPrevWeightsDelta.[j,k] * momentum;
+                    hoPrevWeightsDelta.[j,k] <- delta;
+
+            // update output node biases
+            for k = 0 to numOutput - 1 do
+                let delta = obGrads.[k] * learnRate;
+                oBiases.[k] <- oBiases.[k] + delta;
+                oBiases.[k] <- oBiases.[k] + oPrevBiasesDelta.[k] * momentum;
+                oPrevBiasesDelta.[k] <- delta;
+            ()
+        with ex -> 
+            Console.WriteLine ("Error during weight updates {0}", ex.Message);
 
 // F# |> I LOVE
