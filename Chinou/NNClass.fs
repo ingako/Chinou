@@ -1,50 +1,38 @@
 namespace NNClass
 open System;
-open System.IO;
-open System.Threading;
-open System.Threading.Tasks;
-
-type Msg =
-    | Get of int * int * int * AsyncReplyChannel<double[,] * double[] * double[,] * double[]>
-    | Update of int * int * int * double[,] * double[] * double[,] * double[]
+open System.IO
 
 type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
     let numWeights = 
         (numInput * numHidden) + (numHidden * numOutput) + numHidden + numOutput;
 
     let inputs = Array.create numInput 0.0;
+    let ihWeights = Array.init numInput (fun r -> Array.create numHidden 0.0) // input-hidden
+    let hBiases = Array.create numHidden 0.0;
     let hOutputs = Array.create numHidden 0.0;
+
+    let hoWeights = Array.init numHidden (fun r -> Array.create numOutput 0.0) // hidden-output
+    let oBiases = Array.create numOutput 0.0;
     let outputs = Array.create numOutput 0.0;
-    
-    let _ihWeights = Array2D.create numInput numHidden 0.0; // input-hidden
-    let _hBiases = Array.create numHidden 0.0;
-    let _hoWeights = Array2D.create numHidden numOutput 0.0; // hidden-output
-    let _oBiases = Array.create numOutput 0.0;
 
     let rnd = new Random (seed); // used by randomize and by train/shuffle
 
-    member this.GetInitWeights () : double[] =
-        this.GetWeights _ihWeights _hBiases _hoWeights _oBiases
-
-    member this.GetWeights (ihWeights: double[,]) 
-                           (hBiases: double[]) 
-                           (hoWeights: double[,]) 
-                           (oBiases: double[]) : double[] =
+    member this.GetWeights (): double[] =
         let result = Array.create numWeights 0.0;
         let mutable k = 0;
 
-        for i = 0 to ihWeights.GetLength(0)-1 do
-            for j = 0 to ihWeights.[i,*].Length-1 do
-                result.[k] <- ihWeights.[i,j];
+        for i = 0 to ihWeights.Length-1 do
+            for j = 0 to ihWeights.[i].Length-1 do
+                result.[k] <- ihWeights.[i].[j];
                 k <- k + 1
         for i = 0 to hBiases.Length-1 do
             result.[k] <- hBiases.[i];
             k <- k + 1
-        for i = 0 to hoWeights.GetLength(0)-1 do
-            for j = 0 to hoWeights.[i,*].Length-1 do
-                result.[k] <- hoWeights.[i,j];
+        for i = 0 to hoWeights.Length-1 do
+            for j = 0 to hoWeights.[i].Length-1 do
+                result.[k] <- hoWeights.[i].[j];
                 k <- k + 1
-        for i = 0 to _oBiases.Length-1 do
+        for i = 0 to oBiases.Length-1 do
             result.[k] <- oBiases.[i];
             k <- k + 1
         result;
@@ -59,24 +47,43 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
 
         for i = 0 to numInput-1 do
             for j = 0 to numHidden-1 do
-                _ihWeights.[i,j] <- weights.[k];
+                ihWeights.[i].[j] <- weights.[k];
                 k <- k + 1
         for i = 0 to numHidden-1 do
-            _hBiases.[i] <- weights.[k];
+            hBiases.[i] <- weights.[k];
             k <- k + 1
         for i = 0 to numHidden-1 do
             for j = 0 to numOutput-1 do
-                _hoWeights.[i,j] <- weights.[k];
+                hoWeights.[i].[j] <- weights.[k];
                 k <- k + 1
         for i = 0 to numOutput-1 do
-            _oBiases.[i] <- weights.[k];
+            oBiases.[i] <- weights.[k];
             k <- k + 1
         
     member this.XavierWeights () = 
         // initialize weights and biases approx. Xavier
-        // ***
-        // this.SetWeights (...);
-        ()
+        let var fanIn fanOut = 2.0 / float (fanIn + fanOut)
+        let gaussian mean stddev = 
+            let u1 = 1.0 - rnd.NextDouble();
+            let u2 = 1.0 - rnd.NextDouble();
+            let randStdNormal = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+            let randNormal = mean + stddev * randStdNormal;
+            randNormal
+
+        for i = 0 to numInput-1 do
+            for j = 0 to numHidden-1 do
+                let stddev = Math.Sqrt(var numInput numHidden);
+                ihWeights.[i].[j] <- gaussian 0.0 stddev;
+        for i = 0 to numHidden-1 do
+            let stddev = Math.Sqrt(var numInput numOutput);
+            hBiases.[i] <- gaussian 0.0 stddev;
+        for i = 0 to numHidden-1 do
+            for j = 0 to numOutput-1 do
+                let stddev = Math.Sqrt(var numHidden numOutput);
+                hoWeights.[i].[j] <- gaussian 0.0 stddev;
+        for i = 0 to numOutput-1 do
+            let stddev = Math.Sqrt(var numHidden 1);
+            oBiases.[i] <- gaussian 0.0 stddev;
         
     member this.RandomiseWeights () = 
         // initialize weights and biases to small random values
@@ -120,13 +127,28 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         this.FPrintModel (tw)
         
     member this.FPrintModel (tw: TextWriter) =
-        // TODO
-        // ***
-        // ***
+        fprintfn tw "// numInput numHidden numOutput"
         fprintf tw "%d %d %d\n" numInput numHidden numOutput
-        Array.create numWeights 0.0 |> Array.iter (fun v -> fprintf tw "%f " v)
+
+        fprintfn tw "\n// i-h weights (%i*%i):" numInput numHidden
+        for i = 0 to numInput-1 do
+            ihWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
+            fprintf tw "\n"
+
+        fprintfn tw "\n// h biases (%i):" numHidden
+        hBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
+        fprintf tw "\n"
+        
+        fprintfn tw "\n// h-o weights (%i*%i):" numHidden numOutput
+        for i = 0 to numHidden-1 do
+            hoWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
+            fprintf tw "\n"
+        
+        fprintfn tw "\n// o biases (%i):" numOutput
+        oBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
+        fprintf tw "\n"
+
         fprintfn tw "\n//"
-        ()
 
     member this.HyperTanFunction (x: double): double =
         if x < -20.0 then -1.0; // approximation is correct to 30 decimals
@@ -148,12 +170,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
             sequence.[r] <- sequence.[i];
             sequence.[i] <- tmp;
 
-    member this.ComputeOutputs (xValues: double[]) 
-                               (ihWeights: double[,]) 
-                               (hBiases: double[])
-                               (hoWeights: double[,])                              
-                               (oBiases: double[]) : double[] =
-        // forward prop
+    member this.ComputeOutputs (xValues: double[]): double[] =
         let hSums = Array.create numHidden 0.0 // hidden nodes sums scratch array
         let oSums = Array.create numOutput 0.0; // output nodes sums
 
@@ -164,7 +181,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
 
         for j in 0 .. numHidden-1 do  // compute sum of (ia) weights * inputs
             for i in 0 .. numInput-1 do
-                hSums.[j] <- hSums.[j] + inputs.[i] * ihWeights.[i,j]; 
+                hSums.[j] <- hSums.[j] + inputs.[i] * ihWeights.[i].[j]; 
 
         for i in 0 .. numHidden-1 do  // add biases to a sums
             hSums.[i] <- hSums.[i] + hBiases.[i];
@@ -174,7 +191,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
 
         for j in 0 .. numOutput-1 do  // compute h-o sum of weights * hOutputs
             for i in 0 .. numHidden-1 do
-                oSums.[j] <- oSums.[j] + hOutputs.[i] * hoWeights.[i,j]; 
+                oSums.[j] <- oSums.[j] + hOutputs.[i] * hoWeights.[i].[j]; 
 
         for i in 0 .. numOutput-1 do  // add biases to input-to-hidden sums
             oSums.[i] <- oSums.[i] + oBiases.[i];
@@ -185,19 +202,19 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         let retResult = Array.copy outputs; // could define a GetOutputs method
         retResult;
 
-//    member this.Error (trainData: double[][]): double =
-//        // average squared error per training item
-//        let mutable sumSquaredError = 0.0;
-//        
-//        for i = 0 to trainData.Length - 1 do
-//            let xValues = Array.sub trainData.[i] 0 numInput; // inputs
-//            let tValues = Array.sub trainData.[i] numInput numOutput; // target values
-//            let yValues = this.ComputeOutputs xValues; // outputs using current weights
-//
-//            sumSquaredError <- 
-//                sumSquaredError + (Array.zip tValues yValues
-//                                   |> Array.sumBy(fun (a, b) -> (a - b) * (a - b)));
-//        sumSquaredError / (float trainData.Length);
+    member this.Error (trainData: double[][]): double =
+        // average squared error per training item
+        let mutable sumSquaredError = 0.0;
+        
+        for i = 0 to trainData.Length - 1 do
+            let xValues = Array.sub trainData.[i] 0 numInput; // inputs
+            let tValues = Array.sub trainData.[i] numInput numOutput; // target values
+            let yValues = this.ComputeOutputs xValues; // outputs using current weights
+
+            sumSquaredError <- 
+                sumSquaredError + (Array.zip tValues yValues
+                                   |> Array.sumBy(fun (a, b) -> (a - b) * (a - b)));
+        sumSquaredError / (float trainData.Length);
 
     member this.MaxIndex (vector : double[]): int = // helper for Accuracy()
         // index of largest value
@@ -217,7 +234,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         for i = 0 to testData.Length - 1 do
             let xValues = Array.sub testData.[i] 0 numInput; // get inputs
             let tValues = Array.sub testData.[i] numInput numOutput; // get target values
-            let yValues = this.ComputeOutputs xValues _ihWeights _hBiases _hoWeights _oBiases; // outputs using current weights
+            let yValues = this.ComputeOutputs xValues; // outputs using current weights
 
             let maxIndex = this.MaxIndex yValues;
             let tMaxIndex = this.MaxIndex tValues;
@@ -228,91 +245,46 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                 numWrong <- numWrong + 1.0;
         numCorrect / (numCorrect + numWrong);
 
-    member this.Train (trainData: double[][][], 
-                       maxEpochs: int, 
-                       learnRate: double, 
-                       momentum: double, 
-                       N: int, 
-                       errtw: TextWriter): double[] =
+    member this.Train 
+        (trainData: double[][], maxEpochs: int, learnRate: double, momentum: double, errtw: TextWriter): double[] =
       try
+        // train using back-prop
+      
+        // back-prop momentum specific arrays
+        let ihPrevWeightsDelta = Array2D.init numInput numHidden (fun i j -> 0.0);
+        let hPrevBiasesDelta = Array.create numHidden 0.0;
+        let hoPrevWeightsDelta = Array2D.init numHidden numOutput (fun i j -> 0.0);
+        let oPrevBiasesDelta = Array.create numOutput 0.0;
+        
         // train a back-prop style NN classifier using learning rate and momentum
-        
-        // Create & start
-        // async waiting for calls
-        let fparamstore ihWeights hBiases hoWeights oBiases learn n = MailboxProcessor<Msg>.Start(fun inbox ->
-            let rec loop ihWeights hBiases hoWeights oBiases = async {
-                let! m = inbox.Receive ()
-        
-                match m with
-                | Update (index, epoch, i, ihWeights, hBiases, hoWeights, oBiases) ->
-                    //Console.WriteLine (sprintf "+++ Update: %d %d %d %7.3f %7.3f %7.3f" index epoch i ga gb gc)
-                    // return! loop (a - learn*ga/n) (b - learn*gb/n) (c - learn*gc/n) 
-                    return! loop ihWeights hBiases hoWeights oBiases
-        
-                | Get (index, epoch, i, ch) ->
-                    //Console.WriteLine (sprintf "+++ Get: %d %d %d %7.3f %7.3f %7.3f" index epoch i a b c)
-                    ch.Reply (ihWeights, hBiases, hoWeights, oBiases)
-                    return! loop ihWeights hBiases hoWeights oBiases
-                }
-            loop ihWeights hBiases hoWeights oBiases)
+        let errInterval = maxEpochs / 10; // interval to check validation data
+        let sequence = [|0 .. trainData.Length - 1|]
+        let mutable minTrainErr = 1.0
+        let mutable preTrainErr = 1.0
 
-        // Console.WriteLine (sprintf "\n... starting params actor") 
-        // Initialize weights in paramstore
-        let aparamstore = 
-//            let ihWeights = Array2D.create numInput numHidden 0.0; // input-hidden
-//            let hBiases = Array.create numHidden 0.0;
-//            let hoWeights = Array2D.create numHidden numOutput 0.0; // hidden-output
-//            let oBiases = Array.create numOutput 0.0;
-//            this.GetWeights ihWeights hBiases hoWeights oBiases |> ignore
-            let ihWeights = _ihWeights
-            let hBiases = _hBiases
-            let hoWeights = _hoWeights
-            let oBiases = _oBiases
-            fparamstore ihWeights hBiases hoWeights oBiases learnRate (float N / 2.0) 
-        
-        let aparamstore_get index epoch i =
-            aparamstore.PostAndReply (fun ch -> Get (index, epoch, i, ch))
+        for epoch = 0 to maxEpochs do
+            // log trainning error
+            let trainErr = this.Error trainData;
+            let c = 
+                if minTrainErr > trainErr then "*"
+                else if preTrainErr > trainErr then "-"
+                else ""
+            fprintf errtw "%4i %.4f %s\n" epoch trainErr c
+            minTrainErr <- min trainErr minTrainErr
+            preTrainErr <- trainErr
 
-        let aparamstore_update index epoch i ihWeights hBiases hoWeights oBiases =
-            aparamstore.Post (Update (index, epoch, i, ihWeights, hBiases, hoWeights, oBiases))
+            if (epoch % errInterval) = 0 && epoch <= maxEpochs then
+                printfn "epoch = %4i  training error = %.4f" epoch trainErr;
 
-        // datashard actor
-        let fdatashard (index: int) 
-                       (maxEpochs: int) 
-                       (trainData : double[][]) 
-                       (seed: int) 
-                       (acount: ref<int>)
-                       (adone: TaskCompletionSource<bool>) = MailboxProcessor<bool>.Start(fun inbox ->
-            // back-prop momentum specific arrays
-            let ihPrevWeightsDelta = Array2D.init numInput numHidden (fun i j -> 0.0);
-            let hPrevBiasesDelta = Array.create numHidden 0.0;
-            let hoPrevWeightsDelta = Array2D.init numHidden numOutput (fun i j -> 0.0);
-            let oPrevBiasesDelta = Array.create numOutput 0.0;
-            
-            // sequence to visit each training data
-            // need to be shuffled first for each epoch
-            let sequence = [|0 .. trainData.Length - 1|]
-
-            let rec loop epoch = async {
-                
-                // TODO: error logging
-//                this.FPrintModel errtw
-//                if (epoch % errInterval) = 0 then
-//                    let trainErr = this.Error trainData;
-//                    printfn "epoch = %4i  training error = %.4f" epoch trainErr;
+            if epoch <> maxEpochs then
 
                 this.Shuffle(sequence) // visit each training data in random order
 
                 for ii = 0 to trainData.Length - 1 do
-
-                    let ihWeights, hBiases, hoWeights, oBiases = aparamstore_get index epoch ii
-
-
-                    let idx = sequence.[ii] // trainData row index
+                    let idx = sequence.[ii]
                     let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
                     let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
-                    // forward pass
-                    let newOutput = this.ComputeOutputs xValues ihWeights hBiases hoWeights oBiases; // copy xValues in, compute outputs
+                    this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
                 
                     // 1. compute output nodes signals (assumes softmax)
                     // output signals - gradients w/o associated input terms
@@ -333,25 +305,23 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                     let hSignals = 
                         Array.init numHidden (fun j -> 
                             let sum = 
-                                Array.zip oSignals hoWeights.[j,*]
+                                Array.zip oSignals hoWeights.[j]
                                 |> Array.sumBy(fun (a, b) -> a * b);
                             (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
 
-                    // 4. compute input-hidden weights gradients
-                    let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * xValues.[i]);//inputs.[i]); TODO correctness
+                    // 4. compute input0hidden weights gradients
+                    let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
 
                     // 4b. compute hidden node biases gradients
-                    // let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
-                    let hbGrads = Array.copy hSignals
+                    let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
 
                     // === update weights and biases ===
-
                     // update input-to-hidden weights
                     for i = 0 to numInput - 1 do
                         for j = 0 to numHidden - 1 do
                             let delta = ihGrads.[i,j] * learnRate;
-                            ihWeights.[i,j] <- ihWeights.[i,j] + delta;
-                            ihWeights.[i,j] <- ihWeights.[i,j] + ihPrevWeightsDelta.[i,j] * momentum;
+                            ihWeights.[i].[j] <- ihWeights.[i].[j] + delta;
+                            ihWeights.[i].[j] <- ihWeights.[i].[j] + ihPrevWeightsDelta.[i,j] * momentum;
                             ihPrevWeightsDelta.[i,j] <- delta // save for next time
                 
                     // update hidden biases
@@ -361,12 +331,12 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                         hBiases.[j] <- hBiases.[j] + hPrevBiasesDelta.[j] * momentum;
                         hPrevBiasesDelta.[j] <- delta;
 
-                    // update hidden-to-output weights
+                    // update hiiden-to-output weights
                     for j = 0 to numHidden - 1 do
                         for k = 0 to numOutput - 1 do
                             let delta = hoGrads.[j,k] * learnRate;
-                            hoWeights.[j,k] <- hoWeights.[j,k] + delta;
-                            hoWeights.[j,k] <- hoWeights.[j,k] + hoPrevWeightsDelta.[j,k] * momentum;
+                            hoWeights.[j].[k] <- hoWeights.[j].[k] + delta;
+                            hoWeights.[j].[k] <- hoWeights.[j].[k] + hoPrevWeightsDelta.[j,k] * momentum;
                             hoPrevWeightsDelta.[j,k] <- delta;
 
                     // update output node biases
@@ -375,41 +345,12 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                         oBiases.[k] <- oBiases.[k] + delta;
                         oBiases.[k] <- oBiases.[k] + oPrevBiasesDelta.[k] * momentum;
                         oPrevBiasesDelta.[k] <- delta;
-                    
-                    aparamstore.Post (Update (index, epoch, ii, ihWeights, hBiases, hoWeights, oBiases))
-
-                if epoch >= maxEpochs then
-                    if Interlocked.Decrement acount = 0 then 
-                        //Console.WriteLine (sprintf "... [%d] done all" (tid()))
-                        adone.SetResult true
-                    return ()
-            
-                else
-                    return! loop (epoch + 1)
-                }
-            loop 0)
         
-        // printfn "... starting data shard actors: %d\n" N
-        
-        let acount = ref N
-        let adone = TaskCompletionSource<bool> ()
-
-        let errInterval = maxEpochs / 10; // interval to check validation data
-
-        // kick off data shard actors
-        let shards = [| 
-            for index = 0 to trainData.Length-1 do 
-                yield fdatashard index maxEpochs trainData.[index] (index+1) acount adone |]
-
-        adone.Task.Wait ()
-
-        let ihWeights, hBiases, hoWeights, oBiases = aparamstore_get -1 -1 -1;
-        let bestWeights = this.GetWeights ihWeights hBiases hoWeights oBiases;
+        let bestWeights = this.GetWeights ();
         bestWeights;
         
       with ex -> 
-        Console.WriteLine ("*** {0}", ex.Message);
+        Console.WriteLine ("Error during training: {0}", ex.Message);
         [| 0.0 |]
 
 // F# |> I LOVE
-// (*'-'*)
