@@ -145,27 +145,27 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         
     member this.FPrintModel (tw: TextWriter) =
         fprintfn tw "// numInput numHidden numOutput"
-        fprintf tw "%d %d %d\n" numInput numHidden numOutput
+        fprintfn tw "%d %d %d" numInput numHidden numOutput
 
-        fprintfn tw "\n// i-h weights (%i*%i):" numInput numHidden
+        fprintfn tw "\r\n// i-h weights (%i*%i):" numInput numHidden
         for i = 0 to numInput-1 do
             ihWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
-            fprintf tw "\n"
+            fprintf tw "\r\n"
 
-        fprintfn tw "\n// h biases (%i):" numHidden
+        fprintfn tw "\r\n// h biases (%i):" numHidden
         hBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
-        fprintf tw "\n"
+        fprintf tw "\r\n"
         
-        fprintfn tw "\n// h-o weights (%i*%i):" numHidden numOutput
+        fprintfn tw "\r\n// h-o weights (%i*%i):" numHidden numOutput
         for i = 0 to numHidden-1 do
             hoWeights.[i] |> Array.iter (fun v -> fprintf tw "% .4f " v)
-            fprintf tw "\n"
+            fprintf tw "\r\n"
         
-        fprintfn tw "\n// o biases (%i):" numOutput
+        fprintfn tw "\r\n// o biases (%i):" numOutput
         oBiases |> Array.iter (fun v -> fprintf tw "% .4f " v)
-        fprintf tw "\n"
+        fprintf tw "\r\n"
 
-        fprintfn tw "\n//"
+        fprintfn tw "\r\n//"
 
     member this.HyperTanFunction (x: double): double =
         if x < -20.0 then -1.0; // approximation is correct to 30 decimals
@@ -286,7 +286,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                     if minTrainErr > trainErr then "*"
                     else if preTrainErr > trainErr then "-"
                     else ""
-                fprintf errtw "%4i %.4f %s\n" epoch trainErr c
+                fprintfn errtw "%4i %.4f %s" epoch trainErr c
                 minTrainErr <- min trainErr minTrainErr
                 preTrainErr <- trainErr
                 
