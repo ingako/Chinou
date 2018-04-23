@@ -278,7 +278,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         let errInterval = maxEpochs / 10; // interval to check validation data
         let sequence = [|0 .. trainData.Length - 1|]
 
-        let datashardActor = MailboxProcessor<bool>.Start(fun inbox ->
+        let datashardActor = new MailboxProcessor<Param_Msg> (fun inbox ->
             let rec loop epoch = async {
                 // log trainning error
                 let trainErr = this.Error trainData;
@@ -286,12 +286,11 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                     if minTrainErr > trainErr then "*"
                     else if preTrainErr > trainErr then "-"
                     else ""
-                // TODO
-                // fprintf errtw "%4i %.4f %s\n" epoch trainErr c
+                fprintf errtw "%4i %.4f %s\n" epoch trainErr c
                 minTrainErr <- min trainErr minTrainErr
                 preTrainErr <- trainErr
-
-                if (epoch % errInterval) = 0 && epoch <= maxEpochs then
+                
+                if (epoch % errInterval) = 0 && epoch < maxEpochs then
                     printfn "index = %i  epoch = %4i  training error = %.4f" datashardIdx epoch trainErr;
 
                 if epoch >= maxEpochs then
@@ -304,13 +303,12 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                     this.Shuffle(sequence) // visit each training data in random order
 
                     for ii = 0 to trainData.Length - 1 do
-
-                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, ii, ch))
+                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, 0, ch))// ii, ch))
                         ihWeights <- Array.copy _ihWeights
                         hBiases <- Array.copy _hBiases
                         hoWeights <- Array.copy _hoWeights
                         oBiases <- Array.copy _oBiases 
-
+                        
                         let idx = sequence.[ii]
                         let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
                         let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
@@ -350,10 +348,10 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                         return! loop (epoch + 1)
                 }
             loop 0)
-        ()
+        datashardActor
       with ex -> 
         Console.WriteLine ("*** {0}", ex.Message);
-        ()
+        reraise ()
 
     member this.GetCurrentWeights () = 
         (ihWeights, hBiases, hoWeights, oBiases)
