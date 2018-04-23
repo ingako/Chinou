@@ -114,10 +114,10 @@ let Main2 (hoconName: string) (job: string) (x: string) =
 
         printfn "\nStarting training\n"
         // kick off data shard actors
-        let datashardActors: MailboxProcessor<Param_Msg>[] = [|
+        let datashardActors = [|
             for datashardIdx = 0 to N - 1 do
                 printfn "\n--- Data shard %i ---" datashardIdx
-                let dataShardName = dataName.[datashardIdx]//dataName + "-" + string datashardIdx + ".txt"
+                let dataShardName = dataName.[datashardIdx]
                 printfn "\nLoading data from %s" dataShardName
                 let allData = NNHelper.LoadData (dataShardName)
                 printfn "The %d-item data set is:\n" allData.Length
@@ -128,20 +128,23 @@ let Main2 (hoconName: string) (job: string) (x: string) =
                 
                 printfn "\nThe training data is:\n"    
                 NNHelper.ShowMatrix (trainData, numRows=4, decimals=1, indices=true)
-                if trainData.Length <> 0 then
+                if trainData.Length = 0 then
+                    decr acount
+                else 
                     printfn "\nCreating a %d-%d-%d neural network" numInput numHidden numOutput
                     let nntrain = NeuralNetwork (numInput, numHidden, numOutput, nnSeed)
 
                     let errtw = File.CreateText (errName.[datashardIdx]);
                 
-                    yield nntrain.Train (paramstoreStore, datashardIdx, trainData, maxEpochs, learnRate, momentum, errtw, acount, adone)
+                    yield nntrain.Train (paramstoreStore, datashardIdx, trainData, maxEpochs, learnRate, momentum, errtw, acount, adone)      
             |]
 
         // kick off data shard actor
         datashardActors |> Array.iter(fun a -> a.Start())
         adone.Task.Wait ()
-        paramstoreStore.PostAndReply (fun ch -> SaveModel (modelName, ch))
         printfn "\nTraining complete"
+        // write model to file
+        paramstoreStore.PostAndReply (fun ch -> SaveModel (modelName, ch))
 
     printfn "\n--- Testing a saved model ---"
     

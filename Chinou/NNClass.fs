@@ -290,7 +290,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                 minTrainErr <- min trainErr minTrainErr
                 preTrainErr <- trainErr
                 
-                if (epoch % errInterval) = 0 && epoch < maxEpochs then
+                if (epoch % errInterval) = 0 && epoch <= maxEpochs then
                     printfn "index = %i  epoch = %4i  training error = %.4f" datashardIdx epoch trainErr;
 
                 if epoch >= maxEpochs then
@@ -303,7 +303,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
                     this.Shuffle(sequence) // visit each training data in random order
 
                     for ii = 0 to trainData.Length - 1 do
-                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, 0, ch))// ii, ch))
+                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, ii, ch))// ii, ch))
                         ihWeights <- Array.copy _ihWeights
                         hBiases <- Array.copy _hBiases
                         hoWeights <- Array.copy _hoWeights
@@ -345,12 +345,12 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
 
                         paramstoreStore.Post (Update (datashardIdx, epoch, ii, ihGrads, hbGrads, hoGrads, obGrads))
 
-                        return! loop (epoch + 1)
+                    return! loop (epoch + 1)
                 }
             loop 0)
         datashardActor
       with ex -> 
-        Console.WriteLine ("*** {0}", ex.Message);
+        Console.WriteLine ("Error during training {0}", ex.Message);
         reraise ()
 
     member this.GetCurrentWeights () = 
