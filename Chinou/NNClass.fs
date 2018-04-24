@@ -10,11 +10,11 @@ type Param_Msg =
     | Update of int * int * int * double[,] * double[] * double[,] * double[]
     | SaveModel of string * AsyncReplyChannel<unit>
 
-type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
+type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, rndGen: Random) =
     let numWeights = 
         (numInput * numHidden) + (numHidden * numOutput) + numHidden + numOutput;
 
-    let rnd = new Random (seed); // used by randomize and by train/shuffle
+    let rnd = rndGen // used by randomize and by train/shuffle
     
     let inputs = Array.create numInput 0.0;
     let hOutputs = Array.create numHidden 0.0;
@@ -108,7 +108,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         let initialWeights = Array.init numWeights (initFun);
         this.SetWeights (initialWeights);
         
-    static member LoadModel (modelName: string, nnSeed:int) =
+    static member LoadModel (modelName: string, rnd: Random) =
         let lines = 
             File.ReadAllLines (modelName)
             |> Array.map (fun line -> 
@@ -135,7 +135,7 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
             )
         //printfn "weights (%d): %A" weights.Length weights
         
-        let nn = NeuralNetwork (numInput, numHidden, numOutput, nnSeed);
+        let nn = NeuralNetwork (numInput, numHidden, numOutput, rnd);
         nn.SetWeights (weights);
         nn
       
@@ -279,82 +279,101 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, seed: int) =
         let sequence = [|0 .. trainData.Length - 1|]
 
         let datashardActor = new MailboxProcessor<Param_Msg> (fun inbox ->
+            
             let rec loop epoch = async {
-                // log trainning error
-                let trainErr = this.Error trainData;
-                let c = 
-                    if minTrainErr > trainErr then "*"
-                    else if preTrainErr > trainErr then "-"
-                    else ""
-                fprintfn errtw "%4i %.4f %s" epoch trainErr c
-                minTrainErr <- min trainErr minTrainErr
-                preTrainErr <- trainErr
-                
-                if (epoch % errInterval) = 0 && epoch <= maxEpochs then
-                    printfn "index = %i  epoch = %4i  training error = %.4f" datashardIdx epoch trainErr;
-
-                if epoch >= maxEpochs then
+                if epoch > maxEpochs then
                     if Interlocked.Decrement acount = 0 then 
                         //Console.WriteLine (sprintf "... [%d] done all" (tid()))
                         adone.SetResult true
+                        errtw.Close()
                     return ()
-            
+
                 else
-                    this.Shuffle(sequence) // visit each training data in random order
+                    // sync weights for calculating training error
+                    let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, -1, -1, ch))
+                    ihWeights <- _ihWeights
+                    hBiases <- _hBiases
+                    hoWeights <- _hoWeights
+                    oBiases <- _oBiases 
 
-                    for ii = 0 to trainData.Length - 1 do
-                        let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, ii, ch))// ii, ch))
-                        ihWeights <- Array.copy _ihWeights
-                        hBiases <- Array.copy _hBiases
-                        hoWeights <- Array.copy _hoWeights
-                        oBiases <- Array.copy _oBiases 
+                    // log trainning error
+                    let trainErr = this.Error trainData;
+                    let c = 
+                        if minTrainErr > trainErr then "*"
+                        else if preTrainErr > trainErr then "-"
+                        else ""
+                    fprintfn errtw "%4i %.4f %s" epoch trainErr c
+                    minTrainErr <- min trainErr minTrainErr
+                    preTrainErr <- trainErr
+                    if (epoch % errInterval) = 0 && epoch <= maxEpochs then
+                        printfn "index = %i  epoch = %4i  training error = %.4f" datashardIdx epoch trainErr;
+
+                    if epoch <> maxEpochs then
+
+                        this.Shuffle(sequence) // visit each training data in random order
+
+                        for ii = 0 to trainData.Length - 1 do
+                            let _ihWeights, _hBiases, _hoWeights, _oBiases = paramstoreStore.PostAndReply (fun ch -> Get (datashardIdx, epoch, ii, ch))
+                            ihWeights <- _ihWeights
+                            hBiases <- _hBiases
+                            hoWeights <- _hoWeights
+                            oBiases <- _oBiases 
                         
-                        let idx = sequence.[ii]
-                        let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
-                        let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
-                        this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
+                            let idx = sequence.[ii]
+                            let xValues = Array.sub trainData.[idx] 0 numInput; // inputs
+                            let tValues = Array.sub trainData.[idx] numInput numOutput; // target values
+                            this.ComputeOutputs xValues |> ignore; // copy xValues in, compute outputs
 
-                        // 1. compute output nodes signals (assumes softmax)
-                        // output signals - gradients w/o associated input terms
-                        let oSignals = 
-                            Array.init numOutput (fun k -> 
-                                (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
+                            // 1. compute output nodes signals (assumes softmax)
+                            // output signals - gradients w/o associated input terms
+                            let oSignals = 
+                                Array.init numOutput (fun k -> 
+                                    (tValues.[k] - outputs.[k]) * (1.0 - outputs.[k]) * outputs.[k]);
                 
-                        // 2. compute hidden-to-output weights gradients using output signals
-                        let hoGrads = 
-                            Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
+                            // 2. compute hidden-to-output weights gradients using output signals
+                            let hoGrads = 
+                                Array2D.init numHidden numOutput (fun j k -> oSignals.[k] * hOutputs.[j]);
 
-                        // 2b. compute output biases gradients using output signals
-                        // TODO unnecessary convertion
-                        let obGrads = 
-                            Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
+                            // 2b. compute output biases gradients using output signals
+                            // TODO unnecessary convertion
+                            let obGrads = 
+                                Array.init numOutput (fun k -> oSignals.[k] * 1.0); // dummy assoc. input values
 
-                        // 3. compute hidden nodes signals
-                        let hSignals: double[] = 
-                            Array.init numHidden (fun j -> 
-                                let sum = 
-                                    Array.zip oSignals hoWeights.[j]
-                                    |> Array.sumBy(fun (a, b) -> a * b);
-                                (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
+                            // 3. compute hidden nodes signals
+                            let hSignals: double[] = 
+                                Array.init numHidden (fun j -> 
+                                    let sum = 
+                                        Array.zip oSignals hoWeights.[j]
+                                        |> Array.sumBy(fun (a, b) -> a * b);
+                                    (1.0 + hOutputs.[j]) * (1.0 - hOutputs.[j]) * sum);
 
-                        // 4. compute input0hidden weights gradients
-                        let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
+                            // 4. compute input0hidden weights gradients
+                            let ihGrads = Array2D.init numInput numHidden (fun i j -> hSignals.[j] * inputs.[i]);
 
-                        // 4b. compute hidden node biases gradients
-                        let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
+                            // 4b. compute hidden node biases gradients
+                            let hbGrads = Array.init numHidden (fun j -> hSignals.[j] * 1.0); // dummy 1.0 input
 
-                        paramstoreStore.Post (Update (datashardIdx, epoch, ii, ihGrads, hbGrads, hoGrads, obGrads))
+                            paramstoreStore.Post (Update (datashardIdx, epoch, ii, ihGrads, hbGrads, hoGrads, obGrads))
 
                     return! loop (epoch + 1)
                 }
             loop 0)
+
         datashardActor
+
       with ex -> 
         Console.WriteLine ("Error during training {0}", ex.Message);
         reraise ()
 
     member this.GetCurrentWeights () = 
-        (ihWeights, hBiases, hoWeights, oBiases)
+        // deep copy
+        let _ihWeights = Array.copy ihWeights
+        let _hBiases = Array.copy hBiases
+        let _hoWeights = Array.copy hoWeights
+        let _oBiases = Array.copy oBiases 
+        (_ihWeights, _hBiases, _hoWeights, _oBiases)
+        // shallow copy
+//        (ihWeights, hBiases, hoWeights, oBiases)
 
     member this.UpdateWeights (ihGrads: double[,])
                               (hbGrads: double[])

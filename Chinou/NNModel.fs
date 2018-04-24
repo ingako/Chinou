@@ -68,11 +68,13 @@ let Main2 (hoconName: string) (job: string) (x: string) =
     let momentum = config.GetDouble ("root.momentum");
     printfn "... momentum = %f" momentum
     
+    // random number generator to be used for all the neural network instances
+    let rnd = new Random (nnSeed)
+
     if job = "/TRAIN" then
         printfn "\n--- Training a distributed model ---"
-        
-        printfn "\n--- Parameter shard ---"
 
+        printfn "\n--- Parameter shard ---"
         // set up and kick off parameter store actor
         let paramstore (nntrain: NeuralNetwork) (learnRate: double) (momentum: double) =
             new MailboxProcessor<Param_Msg> (fun inbox ->
@@ -84,6 +86,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
                         return! loop ()
                     | Get (index, epoch, i, ch) ->
                         // reply on the given ch with the nntrain weights and biases
+                        // printfn "epoch = %i dataIdx = %i" epoch i
                         ch.Reply (nntrain.GetCurrentWeights ())
                         return! loop ()
                     | SaveModel (modelName, ch) ->
@@ -93,7 +96,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
                         ()
                     }
                 loop ())
-        let nnParamStore = NeuralNetwork (numInput, numHidden, numOutput, nnSeed)
+        let nnParamStore = NeuralNetwork (numInput, numHidden, numOutput, rnd)
 
         printfn "\nRandomise weights with seed %d" nnSeed
         if xavier then nnParamStore.XavierWeights ()
@@ -101,7 +104,7 @@ let Main2 (hoconName: string) (job: string) (x: string) =
 
         printfn "\nThe initial weights and biases are:"
         let weights = nnParamStore.GetWeights ()
-        NNHelper.ShowVector (weights, decimals=4, lineLen=10);
+        NNHelper.ShowVector (weights, decimals=4, lineLen=10)
 
         let paramstoreStore = paramstore nnParamStore learnRate momentum
         paramstoreStore.Start ()
@@ -110,10 +113,11 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         let acount = ref N
         let adone = TaskCompletionSource<bool> ()
 
-        let errInterval = maxEpochs / 10; // interval to check validation data
+        // interval to check validation data
+        let errInterval = maxEpochs / 10 
 
         printfn "\nStarting training\n"
-        // kick off data shard actors
+        // kick off datashard actors
         let datashardActors = [|
             for datashardIdx = 0 to N - 1 do
                 printfn "\n--- Data shard %i ---" datashardIdx
@@ -128,21 +132,26 @@ let Main2 (hoconName: string) (job: string) (x: string) =
                 
                 printfn "\nThe training data is:\n"    
                 NNHelper.ShowMatrix (trainData, numRows=4, decimals=1, indices=true)
+                
                 if trainData.Length = 0 then
+                    // handle empty training data
                     decr acount
+
                 else 
                     printfn "\nCreating a %d-%d-%d neural network" numInput numHidden numOutput
-                    let nntrain = NeuralNetwork (numInput, numHidden, numOutput, nnSeed)
+                    let nntrain = NeuralNetwork (numInput, numHidden, numOutput, rnd)
 
-                    let errtw = File.CreateText (errName.[datashardIdx]);
-                
+                    let errtw = File.CreateText (errName.[datashardIdx])
+                    
                     yield nntrain.Train (paramstoreStore, datashardIdx, trainData, maxEpochs, learnRate, momentum, errtw, acount, adone)      
             |]
 
-        // kick off data shard actor
+        // kick off datashard actor
         datashardActors |> Array.iter(fun a -> a.Start())
+
         adone.Task.Wait ()
         printfn "\nTraining complete"
+
         // write model to file
         paramstoreStore.PostAndReply (fun ch -> SaveModel (modelName, ch))
 
@@ -154,11 +163,11 @@ let Main2 (hoconName: string) (job: string) (x: string) =
     NNHelper.ShowMatrix (testData2, numRows=4, decimals=1, indices=true)
     
     printfn "\nLoading model from %s" modelName
-    let nnload = NeuralNetwork.LoadModel (modelName, nnSeed)
+    let nnload = NeuralNetwork.LoadModel (modelName, rnd)
 
     printfn "\nThe loaded weights and biases are:"
     let weights = nnload.GetWeights ()
-    NNHelper.ShowVector (weights, decimals=4, lineLen=10);
+    NNHelper.ShowVector (weights, decimals=4, lineLen=10)
 
     let testAcc = nnload.Accuracy (testData2)
 
@@ -173,7 +182,7 @@ let Main (args: string[]) =
         // args.[1] a tag (/TRAIN or /TEST)
         // args.[2] use xavier initialization or not (/X+ or /X-)
         Main2 args.[0] args.[1] (if args.Length > 2 then args.[2] else "")
-        Console.ReadLine() |> ignore;
+        Console.ReadLine() |> ignore
         0;
 
     with ex ->
