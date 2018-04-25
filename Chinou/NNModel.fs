@@ -7,9 +7,10 @@ open System.Threading.Tasks;
 open NNClass
 open NNHelper
         
-let Main2 (hoconName: string) (job: string) (x: string) =
+let Main2 (hoconName: string) (job: string) (nShards: string) (x: string) =
     printfn "... hoconName = %s" hoconName
     printfn "... job = %s" job
+    printfn "... n = %s" nShards
     printfn "... x = %s" x
     
     let job = job.ToUpper ()
@@ -21,13 +22,15 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         failwith "If given, x must be either /X+ or /X-"
     let xavier = Some (x = "/X+")
     
+    // number of data shards
+    let N = int (nShards.Split ':').[1]
+
     let hocon = File.ReadAllText (hoconName);
     printfn ""
     //printfn "... %s\n" hocon
     let config = ConfigurationFactory.ParseString (hocon);
 
     let taskName = config.GetString ("root.taskName");
-    let N = config.GetInt("root.N"); // number of data shards
     let dataName = taskName + "-data"
     let data2Name = taskName + "-data2.txt"
     
@@ -116,7 +119,6 @@ let Main2 (hoconName: string) (job: string) (x: string) =
         // interval to check validation data
         let errInterval = maxEpochs / 10 
 
-        printfn "\nStarting training\n"
         // kick off datashard actors
         let datashardActors = [|
             for datashardIdx = 0 to N - 1 do
@@ -146,7 +148,8 @@ let Main2 (hoconName: string) (job: string) (x: string) =
                     yield nntrain.Train (paramstoreStore, datashardIdx, trainData, maxEpochs, learnRate, momentum, errtw, acount, adone)      
             |]
 
-        // kick off datashard actor
+        // kick off datashard actors
+        printfn "\nStarting training\n"
         datashardActors |> Array.iter(fun a -> a.Start())
 
         adone.Task.Wait ()
@@ -180,8 +183,9 @@ let Main (args: string[]) =
     try 
         // args.[0] HOCON config 
         // args.[1] a tag (/TRAIN or /TEST)
-        // args.[2] use xavier initialization or not (/X+ or /X-)
-        Main2 args.[0] args.[1] (if args.Length > 2 then args.[2] else "")
+        // args.[2] number of data shards
+        // arsg.[3] use xavier initialization or not (/X+ or /X-)
+        Main2 args.[0] args.[1] args.[2] (if args.Length > 3 then args.[3] else "")
         Console.ReadLine() |> ignore
         0;
 
