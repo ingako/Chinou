@@ -40,11 +40,11 @@ let Main2 (hoconName: string) (job: string) (nShards: string) (x: string) =
     let dataName = [| for idx = 0 to N - 1 do yield sprintf "%s-data-%i.txt" taskName idx |]
     let errName = [| for idx = 0 to N - 1 do yield sprintf "%s-err-%i.log" taskName idx |]
     for idx = 0 to N - 1 do
-        printfn "... dataName = %s" dataName.[idx]
-        printfn "... errName = %s" errName.[idx]
-
-    printfn "... data2Name = %s" data2Name
+        printfn "... dataName.[%i] = %s" idx dataName.[idx]
+        printfn "... errName.[%i] = %s" idx errName.[idx]
+    
     printfn "... modelName = %s" modelName
+    printfn "... data2Name = %s" data2Name
 
     let trainPct = config.GetDouble ("root.trainPct");
     printfn "... trainPct = %f" trainPct

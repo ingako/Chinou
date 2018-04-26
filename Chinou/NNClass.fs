@@ -282,10 +282,10 @@ type NeuralNetwork (numInput: int, numHidden: int, numOutput: int, rndGen: Rando
             
             let rec loop epoch = async {
                 if epoch > maxEpochs then
+                    errtw.Close()
                     if Interlocked.Decrement acount = 0 then 
                         //Console.WriteLine (sprintf "... [%d] done all" (tid()))
-                        adone.SetResult true
-                        errtw.Close()
+                        adone.SetResult true    
                     return ()
 
                 else
